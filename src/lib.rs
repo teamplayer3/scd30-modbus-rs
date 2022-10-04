@@ -1,6 +1,4 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
 
 use core::time::Duration;
 
@@ -28,7 +26,8 @@ impl<E: std::fmt::Display> std::fmt::Display for Error<E> {
 #[cfg(feature = "std")]
 impl<E: std::error::Error> std::error::Error for Error<E> {}
 
-pub enum Command {
+#[allow(dead_code)]
+enum Command {
     StartContinuousMeasurement = 0x0036,
     StopContinuousMeasurement = 0x0037,
     SetMeasurementInterval = 0x0025,
@@ -42,8 +41,9 @@ pub enum Command {
     SoftReset = 0x0034,
 }
 
-pub enum Function {
+enum Function {
     ReadHoldingReg = 0x3,
+    #[allow(dead_code)]
     ReadInputReg = 0x4,
     WriteHoldingReg = 0x6,
 }
@@ -57,15 +57,20 @@ impl From<Function> for u8 {
 const RESPONSE_TIME: Duration = Duration::from_millis(5);
 const MODBUS_ADDR: u8 = 0x61;
 
-pub struct Scd30<Serial> {
-    serial: Serial,
-}
-
+/// Measurements received by the sensor.
 #[derive(Debug)]
 pub struct Measurement {
+    /// Co2 measuring [ppm].
     pub co2: f32,
+    /// Humidity measuring [%].
     pub humidity: f32,
+    /// Temperature measuring [°C].
     pub temperature: f32,
+}
+
+/// Scd30 driver.
+pub struct Scd30<Serial> {
+    serial: Serial,
 }
 
 /// See the [datasheet] for I²c parameters.
@@ -87,14 +92,18 @@ where
         Scd30 { serial }
     }
 
+    /// Resets the sensor as it was after power on.
+    ///
+    /// Intern saved data persists and is loaded again.
     pub async fn soft_reset(&mut self) -> Result<(), Error<E>> {
         self.write(Function::WriteHoldingReg.into(), Command::SoftReset, 0x0001)?;
-        if !self.check_resp_data::<6>(4, 0x0001).await? {
+        if !self.check_resp_data::<8, 6>(4, 0x0001).await? {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
     }
 
+    /// Stops interval measuring.
     pub fn stop_measuring(&mut self) -> Result<(), Error<E>> {
         self.write(
             Function::WriteHoldingReg.into(),
@@ -118,7 +127,7 @@ where
             Command::SetAutomaticSelfCalibration,
             data,
         )?;
-        if !self.check_resp_data::<5>(3, data).await? {
+        if !self.check_resp_data::<7, 5>(3, data).await? {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
@@ -133,12 +142,13 @@ where
             Command::ForcedRecalibrationValue,
             reference,
         )?;
-        if !self.check_resp_data::<6>(4, reference).await? {
+        if !self.check_resp_data::<8, 6>(4, reference).await? {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
     }
 
+    /// Get the calibration reference which can be set by [`Scd30::force_recalibrate_with_value()`].
     pub async fn get_forced_recalibration_value(&mut self) -> Result<u16, Error<E>> {
         self.write(
             Function::ReadHoldingReg.into(),
@@ -146,17 +156,24 @@ where
             0x0001,
         )?;
         Timer::after(RESPONSE_TIME).await;
-        let resp = self.read_n::<5>()?;
+        let resp = self.read_n::<7, 5>()?;
         Ok(u16::from_be_bytes([resp[3], resp[4]]))
     }
 
+    /// Set a temperature offset [°C] which will be applied to the received measures.
+    ///
+    /// The on-board RH/T sensor is influenced by thermal self-heating of SCD30 and other
+    /// electrical components. Design-in alters the thermal properties of SCD30 such that
+    /// temperature and humidity offsets may occur when operating the sensor in end-customer
+    /// devices. Compensation of those effects is achievable by writing the temperature offset
+    /// found in continuous operation of the device into the sensor.
     pub async fn set_temperature_offset(&mut self, offset: u16) -> Result<(), Error<E>> {
         self.write(
             Function::WriteHoldingReg.into(),
             Command::SetTemperatureOffset,
             offset,
         )?;
-        if !self.check_resp_data::<6>(4, offset).await? {
+        if !self.check_resp_data::<8, 6>(4, offset).await? {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
@@ -176,13 +193,27 @@ where
             Command::SetMeasurementInterval,
             secs,
         )?;
-        if !self.check_resp_data::<6>(4, secs).await? {
+        if !self.check_resp_data::<8, 6>(4, secs).await? {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
     }
 
     /// Start measuring with mbar (pressure) compensation.
+    ///
+    /// Starts continuous measurement of the SCD30 to measure CO2 concentration, humidity and temperature.
+    /// Measurement data which is not read from the sensor will be overwritten. The measurement interval is
+    /// adjustable via [`Scd30::set_measurement_interval()`], initial measurement rate is 2s.
+    ///
+    /// Continuous measurement status is saved in non-volatile memory. When the sensor is powered down
+    /// while continuous measurement mode is active SCD30 will measure continuously after repowering
+    /// without sending the measurement command.
+    ///
+    /// The CO2 measurement value can be compensated for ambient pressure by feeding the pressure value in
+    /// mBar to the sensor. Setting the ambient pressure will overwrite previous settings of altitude
+    /// compensation. Setting the argument to zero will deactivate the ambient pressure compensation
+    /// (default ambient pressure = 1013.25 mBar). For setting a new ambient pressure when continuous
+    /// measurement is running the whole command has to be written to SCD30.
     pub async fn start_measuring_with_mbar(&mut self, pressure: u16) -> Result<(), Error<E>> {
         debug_assert!(pressure == 0 || (pressure >= 700 && pressure <= 1400));
         self.write(
@@ -190,21 +221,29 @@ where
             Command::StartContinuousMeasurement,
             pressure,
         )?;
-        if !self.check_resp_data::<6>(4, pressure).await? {
+        if !self.check_resp_data::<8, 6>(4, pressure).await? {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
     }
 
+    /// Returns if measures are ready.
+    ///
+    /// Is used to determine if a measurement can be read from the sensor’s buffer. Whenever
+    /// there is a measurement available from the internal buffer it returns true.
     pub async fn data_ready(&mut self) -> Result<bool, Error<E>> {
         self.write(
             Function::ReadHoldingReg.into(),
             Command::GetDataReadyStatus,
             0x0001,
         )?;
-        self.check_resp_data::<5>(3, 0x0001).await
+        self.check_resp_data::<7, 5>(3, 0x0001).await
     }
 
+    /// Read measurements from the sensor.
+    ///
+    /// This function tests first if data is available as [`Scd30::data_ready()`] does. If data
+    /// is ready it is returned as a `Some` else it returns `None`.
     pub async fn read(&mut self) -> Result<Option<Measurement>, Error<E>> {
         match self.data_ready().await {
             Ok(true) => {
@@ -213,7 +252,7 @@ where
                     Command::ReadMeasurement,
                     0x0006,
                 )?;
-                let buffer = self.read_n::<15>()?;
+                let buffer = self.read_n::<17, 15>()?;
                 Ok(Some(Measurement {
                     co2: f32::from_bits(u32::from_be_bytes([
                         buffer[3], buffer[4], buffer[5], buffer[6],
@@ -231,25 +270,19 @@ where
         }
     }
 
-    async fn check_resp_data<const N: usize>(
+    async fn check_resp_data<const NB: usize, const N: usize>(
         &mut self,
         high_byte_index: usize,
         evaluate_data: u16,
-    ) -> Result<bool, Error<E>>
-    where
-        [(); N + 2]: Sized,
-    {
+    ) -> Result<bool, Error<E>> {
         Timer::after(RESPONSE_TIME).await;
-        let resp = self.read_n::<N>()?;
+        let resp = self.read_n::<NB, N>()?;
         Ok(u16::from_be_bytes([resp[high_byte_index], resp[high_byte_index + 1]]) == evaluate_data)
     }
 
-    fn read_n<const N: usize>(&mut self) -> Result<[u8; N], Error<E>>
-    where
-        [(); N + 2]: Sized,
-    {
-        let mut buffer = [0u8; N + 2];
-        for i in 0..(N + 2) {
+    fn read_n<const NB: usize, const N: usize>(&mut self) -> Result<[u8; N], Error<E>> {
+        let mut buffer = [0u8; NB];
+        for i in 0..NB {
             let b = nb::block!(self.serial.read()).map_err(Error::Serial)?;
             buffer[i] = b;
         }
