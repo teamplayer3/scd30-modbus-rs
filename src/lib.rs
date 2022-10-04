@@ -41,15 +41,15 @@ enum Command {
     SoftReset = 0x0034,
 }
 
-enum Function {
-    ReadHoldingReg = 0x3,
+enum RegFunction {
+    ReadHolding = 0x3,
     #[allow(dead_code)]
-    ReadInputReg = 0x4,
-    WriteHoldingReg = 0x6,
+    ReadInput = 0x4,
+    WriteHolding = 0x6,
 }
 
-impl From<Function> for u8 {
-    fn from(f: Function) -> Self {
+impl From<RegFunction> for u8 {
+    fn from(f: RegFunction) -> Self {
         f as u8
     }
 }
@@ -96,7 +96,7 @@ where
     ///
     /// Intern saved data persists and is loaded again.
     pub async fn soft_reset(&mut self) -> Result<(), Error<E>> {
-        self.write(Function::WriteHoldingReg.into(), Command::SoftReset, 0x0001)?;
+        self.write(RegFunction::WriteHolding.into(), Command::SoftReset, 0x0001)?;
         if !self.check_resp_data::<8, 6>(4, 0x0001).await? {
             return Err(Error::GotWrongResponse);
         }
@@ -106,7 +106,7 @@ where
     /// Stops interval measuring.
     pub fn stop_measuring(&mut self) -> Result<(), Error<E>> {
         self.write(
-            Function::WriteHoldingReg.into(),
+            RegFunction::WriteHolding.into(),
             Command::StopContinuousMeasurement,
             0x001,
         )
@@ -123,7 +123,7 @@ where
             _ => 0,
         };
         self.write(
-            Function::ReadHoldingReg.into(),
+            RegFunction::ReadHolding.into(),
             Command::SetAutomaticSelfCalibration,
             data,
         )?;
@@ -138,7 +138,7 @@ where
     /// CO2 reference must be in unit ppm.
     pub async fn force_recalibrate_with_value(&mut self, reference: u16) -> Result<(), Error<E>> {
         self.write(
-            Function::WriteHoldingReg.into(),
+            RegFunction::WriteHolding.into(),
             Command::ForcedRecalibrationValue,
             reference,
         )?;
@@ -151,7 +151,7 @@ where
     /// Get the calibration reference which can be set by [`Scd30::force_recalibrate_with_value()`].
     pub async fn get_forced_recalibration_value(&mut self) -> Result<u16, Error<E>> {
         self.write(
-            Function::ReadHoldingReg.into(),
+            RegFunction::ReadHolding.into(),
             Command::ForcedRecalibrationValue,
             0x0001,
         )?;
@@ -169,7 +169,7 @@ where
     /// found in continuous operation of the device into the sensor.
     pub async fn set_temperature_offset(&mut self, offset: u16) -> Result<(), Error<E>> {
         self.write(
-            Function::WriteHoldingReg.into(),
+            RegFunction::WriteHolding.into(),
             Command::SetTemperatureOffset,
             offset,
         )?;
@@ -186,10 +186,10 @@ where
 
     pub async fn set_measurement_interval(&mut self, interval: Duration) -> Result<(), Error<E>> {
         let secs = interval.as_secs();
-        debug_assert!(secs >= 2 && secs <= 1800);
+        debug_assert!((2..=1800).contains(&secs));
         let secs = u16::try_from(secs).unwrap();
         self.write(
-            Function::WriteHoldingReg.into(),
+            RegFunction::WriteHolding.into(),
             Command::SetMeasurementInterval,
             secs,
         )?;
@@ -215,9 +215,9 @@ where
     /// (default ambient pressure = 1013.25 mBar). For setting a new ambient pressure when continuous
     /// measurement is running the whole command has to be written to SCD30.
     pub async fn start_measuring_with_mbar(&mut self, pressure: u16) -> Result<(), Error<E>> {
-        debug_assert!(pressure == 0 || (pressure >= 700 && pressure <= 1400));
+        debug_assert!(pressure == 0 || (700..=1400).contains(&pressure));
         self.write(
-            Function::WriteHoldingReg.into(),
+            RegFunction::WriteHolding.into(),
             Command::StartContinuousMeasurement,
             pressure,
         )?;
@@ -233,7 +233,7 @@ where
     /// there is a measurement available from the internal buffer it returns true.
     pub async fn data_ready(&mut self) -> Result<bool, Error<E>> {
         self.write(
-            Function::ReadHoldingReg.into(),
+            RegFunction::ReadHolding.into(),
             Command::GetDataReadyStatus,
             0x0001,
         )?;
@@ -248,7 +248,7 @@ where
         match self.data_ready().await {
             Ok(true) => {
                 self.write(
-                    Function::ReadHoldingReg.into(),
+                    RegFunction::ReadHolding.into(),
                     Command::ReadMeasurement,
                     0x0006,
                 )?;
@@ -282,9 +282,8 @@ where
 
     fn read_n<const NB: usize, const N: usize>(&mut self) -> Result<[u8; N], Error<E>> {
         let mut buffer = [0u8; NB];
-        for i in 0..NB {
-            let b = nb::block!(self.serial.read()).map_err(Error::Serial)?;
-            buffer[i] = b;
+        for byte in buffer.iter_mut().take(NB) {
+            *byte = nb::block!(self.serial.read()).map_err(Error::Serial)?;
         }
 
         if !check_crc(&buffer) {
