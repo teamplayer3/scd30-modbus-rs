@@ -5,6 +5,18 @@ use core::time::Duration;
 use embedded_hal::serial::{Read, Write};
 use smol::Timer;
 
+macro_rules! yield_if_blocking {
+    ($res:expr) => {
+        loop {
+            match $res {
+                Ok(v) => break Ok(v),
+                Err(nb::Error::Other(e)) => break Err(Error::Serial(e)),
+                Err(nb::Error::WouldBlock) => futures_lite::future::yield_now().await,
+            }
+        }
+    };
+}
+
 #[derive(Debug)]
 pub enum Error<E> {
     WrongCrc,
@@ -85,10 +97,7 @@ where
     /// Returns an [Scd30] instance with the default address 0x61 shifted one place to the left.
     /// You may or may not need this bitshift depending on the byte size of
     /// your [I²c](embedded_hal::blocking::i2c) peripheral.
-    pub fn new(mut serial: Serial) -> Self {
-        for _ in 0..5 {
-            let _ = nb::block!(serial.read()).map_err(Error::Serial);
-        }
+    pub fn new(serial: Serial) -> Self {
         Scd30 { serial }
     }
 
@@ -96,20 +105,32 @@ where
     ///
     /// Intern saved data persists and is loaded again.
     pub async fn soft_reset(&mut self) -> Result<(), Error<E>> {
-        self.write(RegFunction::WriteHolding.into(), Command::SoftReset, 0x0001)?;
-        if !self.check_resp_data::<8, 6>(4, 0x0001).await? {
+        self.write(RegFunction::WriteHolding.into(), Command::SoftReset, 0x0001)
+            .await?;
+        if !self
+            .check_resp_data::<8, 6>(RegFunction::WriteHolding.into(), 4, 0x0001)
+            .await?
+        {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
     }
 
     /// Stops interval measuring.
-    pub fn stop_measuring(&mut self) -> Result<(), Error<E>> {
+    pub async fn stop_measuring(&mut self) -> Result<(), Error<E>> {
         self.write(
             RegFunction::WriteHolding.into(),
             Command::StopContinuousMeasurement,
             0x001,
         )
+        .await?;
+        if !self
+            .check_resp_data::<8, 6>(RegFunction::WriteHolding.into(), 4, 0x0001)
+            .await?
+        {
+            return Err(Error::GotWrongResponse);
+        }
+        Ok(())
     }
 
     /// Enable or disable automatic self calibration (ASC).
@@ -126,8 +147,12 @@ where
             RegFunction::ReadHolding.into(),
             Command::SetAutomaticSelfCalibration,
             data,
-        )?;
-        if !self.check_resp_data::<7, 5>(3, data).await? {
+        )
+        .await?;
+        if !self
+            .check_resp_data::<7, 5>(RegFunction::ReadHolding.into(), 3, data)
+            .await?
+        {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
@@ -141,8 +166,12 @@ where
             RegFunction::WriteHolding.into(),
             Command::ForcedRecalibrationValue,
             reference,
-        )?;
-        if !self.check_resp_data::<8, 6>(4, reference).await? {
+        )
+        .await?;
+        if !self
+            .check_resp_data::<8, 6>(RegFunction::WriteHolding.into(), 4, reference)
+            .await?
+        {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
@@ -154,9 +183,10 @@ where
             RegFunction::ReadHolding.into(),
             Command::ForcedRecalibrationValue,
             0x0001,
-        )?;
+        )
+        .await?;
         Timer::after(RESPONSE_TIME).await;
-        let resp = self.read_n::<7, 5>()?;
+        let resp = self.read_n::<7, 5>(RegFunction::ReadHolding.into()).await?;
         Ok(u16::from_be_bytes([resp[3], resp[4]]))
     }
 
@@ -172,8 +202,12 @@ where
             RegFunction::WriteHolding.into(),
             Command::SetTemperatureOffset,
             offset,
-        )?;
-        if !self.check_resp_data::<8, 6>(4, offset).await? {
+        )
+        .await?;
+        if !self
+            .check_resp_data::<8, 6>(RegFunction::WriteHolding.into(), 4, offset)
+            .await?
+        {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
@@ -192,8 +226,12 @@ where
             RegFunction::WriteHolding.into(),
             Command::SetMeasurementInterval,
             secs,
-        )?;
-        if !self.check_resp_data::<8, 6>(4, secs).await? {
+        )
+        .await?;
+        if !self
+            .check_resp_data::<8, 6>(RegFunction::WriteHolding.into(), 4, secs)
+            .await?
+        {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
@@ -220,8 +258,12 @@ where
             RegFunction::WriteHolding.into(),
             Command::StartContinuousMeasurement,
             pressure,
-        )?;
-        if !self.check_resp_data::<8, 6>(4, pressure).await? {
+        )
+        .await?;
+        if !self
+            .check_resp_data::<8, 6>(RegFunction::WriteHolding.into(), 4, pressure)
+            .await?
+        {
             return Err(Error::GotWrongResponse);
         }
         Ok(())
@@ -236,8 +278,10 @@ where
             RegFunction::ReadHolding.into(),
             Command::GetDataReadyStatus,
             0x0001,
-        )?;
-        self.check_resp_data::<7, 5>(3, 0x0001).await
+        )
+        .await?;
+        self.check_resp_data::<7, 5>(RegFunction::ReadHolding.into(), 3, 0x0001)
+            .await
     }
 
     /// Read measurements from the sensor.
@@ -251,8 +295,11 @@ where
                     RegFunction::ReadHolding.into(),
                     Command::ReadMeasurement,
                     0x0006,
-                )?;
-                let buffer = self.read_n::<17, 15>()?;
+                )
+                .await?;
+                let buffer = self
+                    .read_n::<17, 15>(RegFunction::ReadHolding.into())
+                    .await?;
                 Ok(Some(Measurement {
                     co2: f32::from_bits(u32::from_be_bytes([
                         buffer[3], buffer[4], buffer[5], buffer[6],
@@ -272,22 +319,56 @@ where
 
     async fn check_resp_data<const NB: usize, const N: usize>(
         &mut self,
+        func: u8,
         high_byte_index: usize,
         evaluate_data: u16,
     ) -> Result<bool, Error<E>> {
         Timer::after(RESPONSE_TIME).await;
-        let resp = self.read_n::<NB, N>()?;
+        let resp = self.read_n::<NB, N>(func).await?;
         Ok(u16::from_be_bytes([resp[high_byte_index], resp[high_byte_index + 1]]) == evaluate_data)
     }
 
-    fn read_n<const NB: usize, const N: usize>(&mut self) -> Result<[u8; N], Error<E>> {
+    async fn read_n<const NB: usize, const N: usize>(
+        &mut self,
+        func: u8,
+    ) -> Result<[u8; N], Error<E>> {
         let mut buffer = [0u8; NB];
-        for byte in buffer.iter_mut().take(NB) {
-            *byte = nb::block!(self.serial.read()).map_err(Error::Serial)?;
-        }
 
-        if !check_crc(&buffer) {
-            return Err(Error::WrongCrc);
+        let mut byte_index = 0;
+        loop {
+            match byte_index {
+                0 => {
+                    let _skipped = self.skip_until_byte(MODBUS_ADDR).await?;
+                    buffer[0] = MODBUS_ADDR;
+                }
+                1 => {
+                    let byte = self.read_byte().await?;
+                    if byte == func {
+                        buffer[1] = func;
+                    } else {
+                        byte_index = 0;
+                        continue;
+                    }
+                }
+                i if i == NB => {
+                    loop {
+                        if check_crc(&buffer) {
+                            break;
+                        } else {
+                            let byte = match self.serial.read() {
+                                Err(nb::Error::WouldBlock) => return Err(Error::WrongCrc),
+                                Err(nb::Error::Other(e)) => return Err(Error::Serial(e)),
+                                Ok(v) => v,
+                            };
+                            array_shift_left(&mut buffer);
+                            buffer[NB - 1] = byte;
+                        }
+                    }
+                    break;
+                }
+                i => buffer[i] = self.read_byte().await?,
+            }
+            byte_index += 1;
         }
 
         let mut output = [0u8; N];
@@ -296,7 +377,23 @@ where
         Ok(output)
     }
 
-    fn write(&mut self, func: u8, cmd: Command, data: u16) -> Result<(), Error<E>> {
+    async fn read_byte(&mut self) -> Result<u8, Error<E>> {
+        yield_if_blocking!(self.serial.read())
+    }
+
+    async fn skip_until_byte(&mut self, byte: u8) -> Result<usize, Error<E>> {
+        let mut skipped = 0;
+        loop {
+            let read_byte = self.read_byte().await?;
+            if read_byte == byte {
+                break;
+            }
+            skipped += 1;
+        }
+        Ok(skipped)
+    }
+
+    async fn write(&mut self, func: u8, cmd: Command, data: u16) -> Result<(), Error<E>> {
         let mut buffer = [0u8; 6 + 2];
 
         buffer[0] = MODBUS_ADDR;
@@ -307,15 +404,21 @@ where
 
         let crc = calculate_crc(&buffer[..6]);
         buffer[6..=7].copy_from_slice(&crc.to_be_bytes());
-        self.write_n(&buffer)
+        self.write_n(&buffer).await
     }
 
-    fn write_n(&mut self, data: &[u8]) -> Result<(), Error<E>> {
+    async fn write_n(&mut self, data: &[u8]) -> Result<(), Error<E>> {
         for b in data {
-            nb::block!(self.serial.write(*b)).map_err(Error::Serial)?;
+            yield_if_blocking!(self.serial.write(*b))?;
         }
 
         Ok(())
+    }
+}
+
+fn array_shift_left<const N: usize>(arr: &mut [u8; N]) {
+    for i in 1..N {
+        arr[i - 1] = arr[i]
     }
 }
 
