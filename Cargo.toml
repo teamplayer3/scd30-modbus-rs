@@ -1,9 +1,9 @@
 [package]
 name = "scd30-modbus"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Alexander Hübener <alex.teamplayer@gmail.com>"]
-repository = "https://github.com/teamplayer3/ens160.git"
+repository = "https://github.com/teamplayer3/scd30-modbus-rs.git"
 description = "SCD30 driver implementation"
 keywords = ["embedded", "scd30-modbus", "iot", "embedded-hal-driver", "co2"]
 categories = ["embedded", "hardware-support", "no-std"]
@@ -18,3 +18,4 @@ std = []
 embedded-hal = "0.2.7"
 nb = "1.0.0"
 smol = "1.2.5"
+futures-lite = "1.12.0"
