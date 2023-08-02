@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use embedded_hal::serial::{Read, Write};
+use embedded_hal_nb::serial::{Read, Write};
 use smol::Timer;
 
 macro_rules! yield_if_blocking {

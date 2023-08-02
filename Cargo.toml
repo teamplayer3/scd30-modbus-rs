@@ -15,7 +15,7 @@ default = []
 std = []
 
 [dependencies]
-embedded-hal = "0.2.7"
+embedded-hal-nb = "1.0.0-alpha.2"
 nb = "1.0.0"
 smol = "1.2.5"
 futures-lite = "1.12.0"
