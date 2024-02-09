@@ -17,5 +17,5 @@ std = []
 [dependencies]
 embedded-hal-nb = "1.0.0-alpha.2"
 nb = "1.0.0"
-smol = "1.2.5"
-futures-lite = "1.12.0"
+smol = "2.0.0"
+futures-lite = "2.2.0"
